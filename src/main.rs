@@ -1,5 +1,5 @@
-use std::io;
 use std::collections::HashMap;
+use std::io;
 use std::net::Ipv4Addr;
 use tcp::Connection;
 
@@ -17,14 +17,14 @@ fn main() -> io::Result<()> {
     let mut buf = [0u8; 1500];
     loop {
         let nbytes = nic.recv(&mut buf[..])?;
-        let _eth_flags = u16::from_be_bytes([buf[0],buf[1]]);
-        let eth_proto = u16::from_be_bytes([buf[2],buf[3]]);
+        let _eth_flags = u16::from_be_bytes([buf[0], buf[1]]);
+        let eth_proto = u16::from_be_bytes([buf[2], buf[3]]);
         // Catch only IPv4
         if eth_proto != 0x0800 {
             continue;
         }
 
-        match etherparse::Ipv4HeaderSlice::from_slice(&buf[4..nbytes]){
+        match etherparse::Ipv4HeaderSlice::from_slice(&buf[4..nbytes]) {
             Ok(ip_header) => {
                 let src = ip_header.source_addr();
                 let dst = ip_header.destination_addr();
@@ -33,15 +33,35 @@ fn main() -> io::Result<()> {
                     continue;
                 }
                 let ip_header_size = ip_header.slice().len();
-                match etherparse::TcpHeaderSlice::from_slice(&buf[4 + ip_header.slice().len()..nbytes]){
+                match etherparse::TcpHeaderSlice::from_slice(
+                    &buf[4 + ip_header.slice().len()..nbytes],
+                ) {
                     Ok(tcp_header) => {
                         let data = 4 + ip_header_size + tcp_header.slice().len();
-                       connections.entry(Quad {
+                        use std::collections::hash_map::Entry;
+                        match connections.entry(Quad {
                             src: (src, tcp_header.source_port()),
                             dst: (dst, tcp_header.destination_port()),
-                        })
-                           .or_default()
-                           .on_packet(&mut nic, ip_header, tcp_header, &buf[data..nbytes]);
+                        }) {
+                            Entry::Occupied(mut con) => {
+                                con.get_mut().on_packet(
+                                    &mut nic,
+                                    ip_header,
+                                    tcp_header,
+                                    &buf[data..nbytes],
+                                );
+                            }
+                            Entry::Vacant(mut free_con) => {
+                                if let Some(con) = tcp::Connection::accept(
+                                    &mut nic,
+                                    ip_header,
+                                    tcp_header,
+                                    &buf[data..nbytes],
+                                )? {
+                                    free_con.insert(con);
+                                }
+                            }
+                        }
                         /*eprintln!("{} → {} {} bytes of TCP packet to port {}",
                                   src,
                                   dst,
@@ -50,13 +70,12 @@ fn main() -> io::Result<()> {
                         );*/
                     }
                     Err(e) => {
-                        eprintln!("Ignoring invalid packet {:?}",e);
+                        eprintln!("Ignoring invalid packet {:?}", e);
                     }
-
                 }
             }
             Err(e) => {
-                eprintln!("Ignoring invalid packet {:?}",e);
+                eprintln!("Ignoring invalid packet {:?}", e);
             }
         }
     }
